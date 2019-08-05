@@ -1,0 +1,9 @@
+{
+	"authors": [
+		"undefeated"
+	],
+	"copyright": "Copyright © 2019, undefeated",
+	"description": "Bonjour/Avahi like service discovery",
+	"license": "Beerware",
+	"name": "dnssdd"
+}
