@@ -1,6 +1,9 @@
+import std.base64;
+import std.bitmanip;
+import std.conv;
 import std.stdio;
 import std.socket;
-import std.bitmanip;
+
 import core.sys.posix.netinet.in_;
 import core.sys.linux.netinet.in_ : IP_ADD_MEMBERSHIP, IP_MULTICAST_LOOP;
 
@@ -48,8 +51,8 @@ void main()
       // parse labels
       RecordLabel _parseLabel(ubyte[] buf, int offset) {
         // TODO: reverse engineering
-        char[][] labels;
-        // length of array
+        string[] labels;
+        // length of bytes
         ushort length = 0;
         bool valid = true;
         while(true) {
@@ -57,6 +60,7 @@ void main()
           if ((label_len & 0b11000000) == 0b11000000) {
             // compression rfc1035 4.1.4
             auto i = buf.peek!ushort(offset + length) & 0b0011111111111111;
+            // recursion
             auto parsed = _parseLabel(buf, i);
             if (parsed.valid) {
               labels.length += 1;
@@ -72,7 +76,7 @@ void main()
             if (label_len == 0x00) {
               break;
             } else if (offset + length + label_len <= buf.length) {
-              auto label = cast(char[]) buf[offset + length..offset+length+label_len];
+              auto label = cast(string) buf[offset + length..offset+length+label_len];
               labels.length += 1;
               labels[$ - 1] = label;
               length += label_len;
@@ -86,7 +90,7 @@ void main()
           }
         }
 
-        char[] domain_name;
+        string domain_name;
         domain_name = "".dup;
         for (auto j = 0, m = labels.length; j < m; j += 1) {
           if (j > 0) {
@@ -103,13 +107,67 @@ void main()
         return result;
       }
 
+      void _parseRdataA(ubyte[] buf, int offset, int len) {
+        string result;
+        result = "".dup;
+        for (int i = 0; i < len; i += 1) {
+          ubyte octet = buf.peek!ubyte(offset + i);
+          result ~= to!string(octet, 10);
+          if(i != len - 1) {
+            result ~= ".";
+          }
+        }
+        writeln("_parseRdataA: ", result);
+      }
+
+      void _parseRdataAAAA(ubyte[] buf, int offset, int len) {
+        string result;
+        result = "".dup;
+        for (int i = 0; i < len; i += 2) {
+          ushort octet = buf.peek!ushort(offset + i);
+          result ~= to!string(octet, 16);
+          if(i != len - 2) {
+            result ~= ":";
+          }
+        }
+        writeln("_parseRdataAAAA: ", result);
+      }
+
+      void _parseRdataPtr(ubyte[] buf, int offset, int len) {
+        string result;
+        RecordLabel parsed = _parseLabel(buf, offset);
+        if (parsed.valid) {
+          result = parsed.domain_name;
+        }
+        writeln("_parseRdataPtr: ", result);
+      }
+
+      void _parseRdataTxt(ubyte[] buf, int offset, int len) {
+        string result;
+        result = "".dup;
+
+        int i = 0;
+        while (i < len) {
+          ubyte blen = buf.peek!ubyte(offset + i);
+          i += 1;
+          if (i + blen <= len) {
+            string pair = cast(string) buf[offset + i..offset + i + blen];
+            result ~= pair;
+            result ~= "\n";
+            i += blen;
+          } else {
+            break;
+          }
+        }
+        writeln("_parseRdataTxt: ", result);
+      }
+
       void _parseRdataSrv(ubyte[] buf, int offset, int len) {
         if (len <= 6) {
           return;
         }
         string target = "".dup;
         RecordLabel parsed = _parseLabel(buf, offset + 6);
-        writeln(parsed);
         if (parsed.valid) {
           target = cast(string) parsed.domain_name;
         }
@@ -120,6 +178,12 @@ void main()
         writeln("priority: ", priority, ", weight: ", weight, " port: ", port);
       }
 
+      void _parseRdataOther(ubyte[] buf, int offset, int len) {
+        string result;
+        result = Base64.encode(buf[offset..offset + len]);
+        writeln("_parseRdataOther: ", result);
+      }
+
       // parse general
       void _parse(ubyte[] buf) {
         if (buf.length <= 12) {
@@ -127,23 +191,24 @@ void main()
         }
         writeln("========= start, len: ", buf.length);
         ushort[string] header;
-        header["id"] = buf.read!ushort();
-        ubyte ub = buf.read!ubyte();
+        header["id"] = buf.peek!ushort(0);
+
+        ubyte ub = buf.peek!ubyte(2);
         header["qr"] = (ub & 0b11111111) >> 7;
         header["op"] = (ub & 0b01111000) >> 3;
         header["aa"] = (ub & 0b00000100) >> 2;
         header["tc"] = (ub & 0b00000010) >> 1;
         header["rd"] = (ub & 0b00000001) >> 0;
-        ub = buf.read!ubyte();
+        ub = buf.peek!ubyte(3);
         header["ra"] = (ub & 0b10000000) >> 7;
         header["z"]  = (ub & 0b01000000) >> 6;
         header["ad"] = (ub & 0b00100000) >> 6;
         header["cd"] = (ub & 0b00010000) >> 5;
         header["rc"] = (ub & 0b00001111) >> 0;
-        header["questions"] = buf.read!ushort();
-        header["answers"] = buf.read!ushort();
-        header["authorities"] = buf.read!ushort();
-        header["additionals"] = buf.read!ushort();
+        header["questions"] = buf.peek!ushort(4);
+        header["answers"] = buf.peek!ushort(6);
+        header["authorities"] = buf.peek!ushort(8);
+        header["additionals"] = buf.peek!ushort(10);
         if (header["tc"] != 0 ||
             header["rd"] != 0 ||
             header["ra"] != 0 ||
@@ -152,6 +217,7 @@ void main()
             header["cd"] != 0 ||
             header["rc"] != 0) {
           writeln(">>>> some from [tc, rd, ra, z, ad, cd, rc] header elements is not 0");
+          writeln();
           return;
         }
         auto sum = header["questions"];
@@ -186,12 +252,10 @@ void main()
         }
         record_count_list.length = count;
 
-        auto offset = 0;
+        auto offset = 12;
         auto current_record_item = 0;
         while(current_record_item < record_count_list.length) {
           auto parsed = _parseLabel(buf, offset);
-          writeln("parsed: ", parsed);
-
           if (parsed.valid) {
             offset += parsed.length;
           } else {
@@ -246,11 +310,21 @@ void main()
             if (offset + rdlen > buf.length) {
               break;
             }
-            offset += rdlen;
-            if (record_type == "SRV") {
+            if (record_type == "A") {
+              _parseRdataA(buf, offset, rdlen);
+            } else if (record_type == "AAAA") {
+              _parseRdataAAAA(buf, offset, rdlen);
+            }else if (record_type == "PTR") {
+              _parseRdataPtr(buf, offset, rdlen);
+            } else if (record_type == "TXT") {
+              _parseRdataTxt(buf, offset, rdlen);
+            } else if (record_type == "SRV") {
               _parseRdataSrv(buf, offset, rdlen);
+            } else {
+              _parseRdataOther(buf, offset, rdlen);
             }
-            writeln("answer for: ", parsed.domain_name);
+            offset += rdlen;
+            writeln("answer? for: ", parsed.domain_name);
             writeln("type: ", record_type, " class: ", record_class, " flash: ", flash);
             writeln("ttl: ", ttl, " rdlen: ", rdlen);
           }
@@ -261,7 +335,8 @@ void main()
           }
         }
 
-        writeln("end >>>>");
+        writeln("end >>>>", offset, ">>", buf.length);
+        writeln();
       }
       _parse(buf);
     } else {

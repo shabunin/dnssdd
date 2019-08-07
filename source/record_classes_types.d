@@ -6,7 +6,7 @@ import std.exception : assumeUnique;
 struct RecordLabel {
   bool valid;
   ushort length;
-  char[] domain_name;
+  string domain_name;
 }
 
 immutable string[ushort] RecordClasses; 
