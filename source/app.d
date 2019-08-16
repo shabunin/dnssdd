@@ -324,7 +324,7 @@ void main()
               _parseRdataOther(buf, offset, rdlen);
             }
             offset += rdlen;
-            writeln("answer? for: ", parsed.domain_name);
+            writeln(record_key, " for: ", parsed.domain_name);
             writeln("type: ", record_type, " class: ", record_class, " flash: ", flash);
             writeln("ttl: ", ttl, " rdlen: ", rdlen);
           }
