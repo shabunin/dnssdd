@@ -3,76 +3,93 @@ module record_classes_types;
 import std.stdio;
 import std.exception : assumeUnique;
 
+struct RecordHeader {
+  ushort id;
+  ubyte qr, op, aa, tc, rd;
+  ubyte ra, z, ad, cd, rc;
+  ushort questions;
+  ushort answers;
+  ushort authorities;
+  ushort additionals;
+}
+
+struct DnssdRecord {
+  RecordHeader header;
+  // TODO: arrays of answers, questions, authorities, etc
+  // TODO: structs: Answer, Question, etc.. 
+}
+
+// TODO: structs for different record types
+
 struct RecordLabel {
   bool valid;
   ushort length;
   string domain_name;
 }
 
-immutable string[ushort] RecordClasses; 
-immutable string[ushort] RecordTypes;
+enum RecordClasses {
+  unknown = 0,
+  int_ = 1,
+  cs = 2,
+  ch = 3,
+  hs = 4
+};
 
-static this() {
-  string[ushort] t = [
-    1: "INT",
-    2: "CS",
-    3: "CH",
-    4: "HS"
-  ];
-  RecordClasses = assumeUnique(t);
-  t = [
-    0: "UNKNOWN",
-    1: "A",
-    2: "NS",
-    3: "MD",
-    4: "MF",
-    5: "CNAME",
-    6: "SOA",
-    7: "MB",
-    8: "MG",
-    9: "MR",
-    10: "NULL",
-    11: "WKS",
-    12: "PTR",
-    13: "HINFO",
-    14: "MINFO",
-    15: "MX",
-    16: "TXT",
-    28: "AAAA",
-    18: "AFSDB",
-    42: "APL",
-    257: "CAA",
-    60: "CDNSKEY",
-    59: "CDS",
-    37: "CERT",
-    49: "DHCID",
-    32769: "DLV",
-    39: "DNAME",
-    48: "DNSKEY",
-    43: "DS",
-    55: "HIP",
-    45: "IPSECKEY",
-    25: "KEY",
-    36: "KX",
-    29: "LOC",
-    35: "NAPTR",
-    47: "NSEC",
-    50: "NSEC3",
-    51: "NSEC3PARAM",
-    61: "OPENPGPKEY",
-    46: "RRSIG",
-    17: "RP",
-    24: "SIG",
-    33: "SRV",
-    44: "SSHFP",
-    32768: "TA",
-    249: "TKEY",
-    52: "TLSA",
-    250: "TSIG",
-    256: "URI",
-    41: "OPT",
-    255: "*"
-  ];
-  RecordTypes = assumeUnique(t);
+enum RecordTypes {
+  unknown = 0,
+  a = 1,
+  ns = 2,
+  md = 3,
+  mf = 4,
+  cname = 5,
+  soa = 6,
+  mb = 7,
+  mg = 8,
+  mr = 9,
+  null_ = 10,
+  wks = 11,
+  ptr = 12,
+  hinfo = 13,
+  minfo = 14,
+  mx = 15,
+  txt = 16,
+  aaaa = 28,
+  afsdb = 18,
+  apl = 42,
+  caa = 257,
+  cdnskey = 60,
+  cds = 59,
+  cert = 37,
+  dhcid = 49,
+  dlv = 32769,
+  dname = 39,
+  dnskey = 48,
+  ds = 43,
+  hip = 55,
+  ipseckey = 45,
+  key = 25,
+  kx = 36,
+  loc = 29,
+  naptr = 35,
+  nsec = 47,
+  nsec3 = 50,
+  nsec3param = 51,
+  openpgpkey = 61,
+  rrsig = 46,
+  rp = 17,
+  sig = 24,
+  srv = 33,
+  sshfp = 44,
+  ta = 32768,
+  tkey = 249,
+  tlsa = 52,
+  tsig = 250,
+  uri = 256,
+  opt = 41,
+  all = 255
+};
+
+shared static this() {
+  // TODO: enum with values
 }
 
