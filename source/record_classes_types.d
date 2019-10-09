@@ -44,6 +44,7 @@ struct RecordHeader {
 }
 
 struct Record {
+  bool valid;
   RecordHeader header;
   RecordQuestion[] questions;
   RecordResponse[] answers;

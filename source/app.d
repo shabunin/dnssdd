@@ -34,7 +34,9 @@ class DnsSD {
     auto adr = getAddress(multicastGroupIP, port);
     sock.bind(adr[0]);
   }
-  public void processMessages() {
+  public Record processMessages() {
+    Record result;
+    result.valid = false;
     ubyte[] buf;
     buf.length = 1024;
     auto receivedLen = sock.receive(buf);
@@ -171,7 +173,6 @@ class DnsSD {
         ushort priority = buf.peek!ushort(offset);
         ushort weight = buf.peek!ushort(offset + 2);
         ushort port = buf.peek!ushort(offset + 4);
-        writeln("_parseRdataSrv:: ", target);
         result.data = target;
         result.priority = priority;
         result.weight = weight;
@@ -188,9 +189,10 @@ class DnsSD {
       }
 
       // parse general
-      void _parse(ubyte[] buf) {
+      Record _parse(ubyte[] buf) {
+        Record result;
         if (buf.length <= 12) {
-          return;
+          return result;
         }
         RecordHeader header;
         header.id = buf.peek!ushort(0);
@@ -219,15 +221,22 @@ class DnsSD {
             header.ad != 0 ||
             header.cd != 0 ||
             header.rc != 0) {
-          return;
+          return result;
         }
+
+        result.header = header;
+        result.questions.length = header.questions;
+        result.answers.length = header.answers;
+        result.authorities.length = header.authorities;
+        result.additionals.length = header.additionals;
+
         auto sum = header.questions;
         sum += header.answers;
         sum += header.authorities;
         sum += header.additionals;
         if (sum == 0) {
           // no payload?
-          return;
+          return result;
         }
 
         // ref0rma:
@@ -263,6 +272,12 @@ class DnsSD {
 
         auto offset = 12;
         auto current_record_item = 0;
+        // indexes for pushing to result array
+        auto index_questions = 0;
+        auto index_answers = 0;
+        auto index_authorities = 0;
+        auto index_additionals = 0;
+
         while(current_record_item < record_count_list.length) {
           auto parsed = _parseLabel(buf, offset);
           if (parsed.valid) {
@@ -285,7 +300,8 @@ class DnsSD {
             question.label = parsed.domain_name;
             question.record_type = record_type;
             question.record_class = record_class;
-            writeln(question);
+            result.questions[index_questions] = question;
+            index_questions += 1;
           } else {
             if (offset + 10 > buf.length) {
               break;
@@ -328,7 +344,17 @@ class DnsSD {
                 break;
             }
             offset += rdlen;
-            writeln(response);
+
+            if (record_key == "answers") {
+              result.answers[index_answers] = response;
+              index_answers += 1;
+            } else if (record_key == "authorities") {
+              result.authorities[index_authorities] = response;
+              index_authorities += 1;
+            } else if (record_key == "additionals") {
+              result.additionals[index_additionals] = response;
+              index_additionals += 1;
+            }
           }
 
           record_count_list[current_record_item].count--;
@@ -337,11 +363,13 @@ class DnsSD {
           }
         }
 
+        result.valid = true;
+        return result;
       }
-      _parse(buf);
-    } else {
-      // no data
+      result = _parse(buf);
     }
+
+    return result;
   }
 }
 
@@ -353,7 +381,11 @@ void main()
 
   while(true)
   {
-    resolver.processMessages();
+    auto rec = resolver.processMessages();
+    if (rec.valid) {
+      writeln(" ===== record parsed ===== ");
+      writeln(rec);
+    }
     //Thread.sleep(100.msecs);
   }
 }
