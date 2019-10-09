@@ -4,6 +4,7 @@ import std.conv;
 import std.stdio;
 import std.socket;
 
+import core.thread;
 import core.sys.posix.netinet.in_;
 import core.sys.linux.netinet.in_ : IP_ADD_MEMBERSHIP, IP_MULTICAST_LOOP;
 
@@ -101,44 +102,45 @@ class DnsSD {
         return result;
       }
 
-      void _parseRdataA(ubyte[] buf, int offset, int len) {
-        string result;
-        result = "".dup;
+      RData _parseRdataA(ubyte[] buf, int offset, int len) {
+        RData result;
+        result.data = "".dup;
         for (int i = 0; i < len; i += 1) {
           ubyte octet = buf.peek!ubyte(offset + i);
-          result ~= to!string(octet, 10);
+          result.data ~= to!string(octet, 10);
           if(i != len - 1) {
-            result ~= ".";
+            result.data ~= ".";
           }
         }
-        writeln("_parseRdataA: ", result);
+        return result;
       }
 
-      void _parseRdataAAAA(ubyte[] buf, int offset, int len) {
-        string result;
-        result = "".dup;
+      RData _parseRdataAAAA(ubyte[] buf, int offset, int len) {
+        RData result;
+        result.data = "".dup;
         for (int i = 0; i < len; i += 2) {
           ushort octet = buf.peek!ushort(offset + i);
-          result ~= to!string(octet, 16);
+          result.data ~= to!string(octet, 16);
           if(i != len - 2) {
-            result ~= ":";
+            result.data ~= ":";
           }
         }
-        writeln("_parseRdataAAAA: ", result);
+        return result;
       }
 
-      void _parseRdataPtr(ubyte[] buf, int offset, int len) {
-        string result;
+      RData _parseRdataPtr(ubyte[] buf, int offset, int len) {
+        RData result;
         RecordLabel parsed = _parseLabel(buf, offset);
         if (parsed.valid) {
-          result = parsed.domain_name;
+          result.data = parsed.domain_name;
         }
-        writeln("_parseRdataPtr: ", result);
+
+        return result;
       }
 
-      void _parseRdataTxt(ubyte[] buf, int offset, int len) {
-        string result;
-        result = "".dup;
+      RData _parseRdataTxt(ubyte[] buf, int offset, int len) {
+        RData result;
+        result.data = "".dup;
 
         int i = 0;
         while (i < len) {
@@ -146,19 +148,20 @@ class DnsSD {
           i += 1;
           if (i + blen <= len) {
             string pair = cast(string) buf[offset + i..offset + i + blen];
-            result ~= pair;
-            result ~= "\n";
+            result.data ~= pair;
+            result.data ~= "\n";
             i += blen;
           } else {
             break;
           }
         }
-        writeln("_parseRdataTxt: ", result);
+        return result;
       }
 
-      void _parseRdataSrv(ubyte[] buf, int offset, int len) {
+      RData _parseRdataSrv(ubyte[] buf, int offset, int len) {
+        RData result;
         if (len <= 6) {
-          return;
+          return result;
         }
         string target = "".dup;
         RecordLabel parsed = _parseLabel(buf, offset + 6);
@@ -169,13 +172,19 @@ class DnsSD {
         ushort weight = buf.peek!ushort(offset + 2);
         ushort port = buf.peek!ushort(offset + 4);
         writeln("_parseRdataSrv:: ", target);
-        writeln("priority: ", priority, ", weight: ", weight, " port: ", port);
+        result.data = target;
+        result.priority = priority;
+        result.weight = weight;
+        result.port = port;
+
+        return result;
       }
 
-      void _parseRdataOther(ubyte[] buf, int offset, int len) {
-        string result;
-        result = Base64.encode(buf[offset..offset + len]);
-        writeln("_parseRdataOther: ", result);
+      RData _parseRdataOther(ubyte[] buf, int offset, int len) {
+        RData result;
+        result.data = Base64.encode(buf[offset..offset + len]);
+
+        return result;
       }
 
       // parse general
@@ -210,7 +219,6 @@ class DnsSD {
             header.ad != 0 ||
             header.cd != 0 ||
             header.rc != 0) {
-          writeln();
           return;
         }
         auto sum = header.questions;
@@ -271,10 +279,13 @@ class DnsSD {
             }
             ushort record_type = buf.peek!ushort(offset);
             offset += 2;
-            ushort cls_value = buf.peek!ushort(offset);
+            ushort record_class = buf.peek!ushort(offset);
             offset += 2;
-            writeln("questin for: ", parsed.domain_name);
-            writeln("type: ", record_type, " class: ", cls_value);
+            RecordQuestion question;
+            question.label = parsed.domain_name;
+            question.record_type = record_type;
+            question.record_class = record_class;
+            writeln(question);
           } else {
             if (offset + 10 > buf.length) {
               break;
@@ -293,27 +304,31 @@ class DnsSD {
             if (offset + rdlen > buf.length) {
               break;
             }
+            RecordResponse response;
+            response.record_type = record_type;
+            response.record_class = cls_key;
+            response.flash = flash;
+            response.ttl = ttl;
+            response.rdlen = rdlen;
             switch(record_type) {
               case RecordTypes.a:
-                _parseRdataA(buf, offset, rdlen);
+                response.rdata = _parseRdataA(buf, offset, rdlen);
                 break;
               case RecordTypes.ptr:
-                _parseRdataPtr(buf, offset, rdlen);
+                response.rdata = _parseRdataPtr(buf, offset, rdlen);
                 break;
               case RecordTypes.txt:
-                _parseRdataTxt(buf, offset, rdlen);
+                response.rdata = _parseRdataTxt(buf, offset, rdlen);
                 break;
               case RecordTypes.srv:
-                _parseRdataSrv(buf, offset, rdlen);
+                response.rdata = _parseRdataSrv(buf, offset, rdlen);
                 break;
               default:
-                _parseRdataOther(buf, offset, rdlen);
+                response.rdata = _parseRdataOther(buf, offset, rdlen);
                 break;
             }
             offset += rdlen;
-            writeln(record_key, " for: ", parsed.domain_name);
-            writeln("type: ", record_type, " class: ", cls_key, " flash: ", flash);
-            writeln("ttl: ", ttl, " rdlen: ", rdlen);
+            writeln(response);
           }
 
           record_count_list[current_record_item].count--;
@@ -322,7 +337,6 @@ class DnsSD {
           }
         }
 
-        writeln();
       }
       _parse(buf);
     } else {
@@ -340,5 +354,6 @@ void main()
   while(true)
   {
     resolver.processMessages();
+    //Thread.sleep(100.msecs);
   }
 }

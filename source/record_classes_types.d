@@ -3,6 +3,36 @@ module record_classes_types;
 import std.stdio;
 import std.exception : assumeUnique;
 
+struct RecordLabel {
+  bool valid;
+  ushort length;
+  string domain_name;
+}
+
+struct RecordQuestion {
+ string label;
+ ushort record_type;
+ ushort record_class;
+}
+
+struct RData {
+  string data;
+  // for srv
+  ushort priority;
+  ushort weight;
+  ushort port;
+}
+
+// answers, authorities, additionals
+struct RecordResponse {
+  ushort record_type;
+  ushort record_class;
+  ushort flash;
+  uint ttl;
+  ushort rdlen; 
+  RData rdata;
+}
+
 struct RecordHeader {
   ushort id;
   ubyte qr, op, aa, tc, rd;
@@ -13,18 +43,12 @@ struct RecordHeader {
   ushort additionals;
 }
 
-struct DnssdRecord {
+struct Record {
   RecordHeader header;
-  // TODO: arrays of answers, questions, authorities, etc
-  // TODO: structs: Answer, Question, etc.. 
-}
-
-// TODO: structs for different record types
-
-struct RecordLabel {
-  bool valid;
-  ushort length;
-  string domain_name;
+  RecordQuestion[] questions;
+  RecordResponse[] answers;
+  RecordResponse[] authorities;
+  RecordResponse[] additionals;
 }
 
 enum RecordClasses {
@@ -88,8 +112,3 @@ enum RecordTypes {
   opt = 41,
   all = 255
 };
-
-shared static this() {
-  // TODO: enum with values
-}
-
