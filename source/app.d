@@ -1,6 +1,7 @@
 import std.base64;
 import std.bitmanip;
 import std.conv;
+import std.digest;
 import std.stdio;
 import std.socket;
 
@@ -12,6 +13,7 @@ import record_classes_types;
 
 class DnsSD {
   Socket sock;
+  Address addr;
   this(string multicastGroupIP = "224.0.0.251", ushort port = 5353) {
     sock = new UdpSocket(AddressFamily.INET);
     sock.blocking = false;
@@ -31,8 +33,14 @@ class DnsSD {
 
     auto optionValue = (cast(char*)&addRequest)[0.. ip_mreq.sizeof];
     sock.setOption(SocketOptionLevel.IP, cast(SocketOption)IP_ADD_MEMBERSHIP, optionValue);
-    auto adr = getAddress(multicastGroupIP, port);
-    sock.bind(adr[0]);
+    auto addrs = getAddress(multicastGroupIP, port);
+    addr = addrs[0];
+    sock.bind(addr);
+  }
+  public void sendRecord(Record record) {
+    ubyte[] result = serializeRR(record);
+
+    sock.sendTo(result, addr);
   }
   public Record processMessages() {
     Record result;
@@ -40,352 +48,91 @@ class DnsSD {
     ubyte[] buf;
     buf.length = 1024;
     auto receivedLen = sock.receive(buf);
-    if(receivedLen > 0)
-    {
+    if(receivedLen > 0) {
       buf.length = receivedLen;
+      writeln("##### ##### #### #### ##### #### #####");
+      writeln("Received: ", buf.toHexString());
+      writeln("##### ##### #### #### ##### #### #####");
 
-      // TODO: comments and docs
-
-      // parse labels
-      RecordLabel _parseLabel(ubyte[] buf, int offset) {
-        string[] labels;
-        // length of bytes
-        ushort length = 0;
-        bool valid = true;
-        while(true) {
-          auto label_len = buf.peek!ubyte(offset + length);
-          if ((label_len & 0b11000000) == 0b11000000) {
-            // compression rfc1035 4.1.4
-            auto i = buf.peek!ushort(offset + length) & 0b0011111111111111;
-            // recursion
-            auto parsed = _parseLabel(buf, i);
-            if (parsed.valid) {
-              labels.length += 1;
-              labels[$ - 1] = parsed.domain_name;
-              length += 2;
-              break;
-            } else {
-              valid = false;
-              break;
-            }
-          } else if ((label_len & 0b11000000) == 0b00000000) {
-            length += 1;
-            if (label_len == 0x00) {
-              break;
-            } else if (offset + length + label_len <= buf.length) {
-              auto label = cast(string) buf[offset + length..offset+length+label_len];
-              labels.length += 1;
-              labels[$ - 1] = label;
-              length += label_len;
-            } else {
-              valid = false;
-              break;
-            }
-          } else {
-            valid = false;
-            break;
-          }
-        }
-
-        string domain_name;
-        domain_name = "".dup;
-        for (auto j = 0, m = labels.length; j < m; j += 1) {
-          if (j > 0) {
-            domain_name ~= ".";
-          }
-          domain_name ~= labels[j];
-        }
-
-        RecordLabel result;
-        result.valid = valid;
-        result.length = length;
-        result.domain_name = domain_name;
-
-        return result;
-      }
-
-      RData _parseRdataA(ubyte[] buf, int offset, int len) {
-        RData result;
-        result.data = "".dup;
-        for (int i = 0; i < len; i += 1) {
-          ubyte octet = buf.peek!ubyte(offset + i);
-          result.data ~= to!string(octet, 10);
-          if(i != len - 1) {
-            result.data ~= ".";
-          }
-        }
-        return result;
-      }
-
-      RData _parseRdataAAAA(ubyte[] buf, int offset, int len) {
-        RData result;
-        result.data = "".dup;
-        for (int i = 0; i < len; i += 2) {
-          ushort octet = buf.peek!ushort(offset + i);
-          result.data ~= to!string(octet, 16);
-          if(i != len - 2) {
-            result.data ~= ":";
-          }
-        }
-        return result;
-      }
-
-      RData _parseRdataPtr(ubyte[] buf, int offset, int len) {
-        RData result;
-        RecordLabel parsed = _parseLabel(buf, offset);
-        if (parsed.valid) {
-          result.data = parsed.domain_name;
-        }
-
-        return result;
-      }
-
-      RData _parseRdataTxt(ubyte[] buf, int offset, int len) {
-        RData result;
-        result.data = "".dup;
-
-        int i = 0;
-        while (i < len) {
-          ubyte blen = buf.peek!ubyte(offset + i);
-          i += 1;
-          if (i + blen <= len) {
-            string pair = cast(string) buf[offset + i..offset + i + blen];
-            result.data ~= pair;
-            result.data ~= "\n";
-            i += blen;
-          } else {
-            break;
-          }
-        }
-        return result;
-      }
-
-      RData _parseRdataSrv(ubyte[] buf, int offset, int len) {
-        RData result;
-        if (len <= 6) {
-          return result;
-        }
-        string target = "".dup;
-        RecordLabel parsed = _parseLabel(buf, offset + 6);
-        if (parsed.valid) {
-          target = cast(string) parsed.domain_name;
-        }
-        ushort priority = buf.peek!ushort(offset);
-        ushort weight = buf.peek!ushort(offset + 2);
-        ushort port = buf.peek!ushort(offset + 4);
-        result.data = target;
-        result.priority = priority;
-        result.weight = weight;
-        result.port = port;
-
-        return result;
-      }
-
-      RData _parseRdataOther(ubyte[] buf, int offset, int len) {
-        RData result;
-        result.data = Base64.encode(buf[offset..offset + len]);
-
-        return result;
-      }
-
-      // parse general
-      Record _parse(ubyte[] buf) {
-        Record result;
-        if (buf.length <= 12) {
-          return result;
-        }
-        RecordHeader header;
-        header.id = buf.peek!ushort(0);
-
-        ubyte ub = buf.peek!ubyte(2);
-        header.qr = (ub & 0b11111111) >> 7;
-        header.op = (ub & 0b01111000) >> 3;
-        header.aa = (ub & 0b00000100) >> 2;
-        header.tc = (ub & 0b00000010) >> 1;
-        header.rd = (ub & 0b00000001) >> 0;
-        ub = buf.peek!ubyte(3);
-        header.ra = (ub & 0b10000000) >> 7;
-        header.z  = (ub & 0b01000000) >> 6;
-        header.ad = (ub & 0b00100000) >> 6;
-        header.cd = (ub & 0b00010000) >> 5;
-        header.rc = (ub & 0b00001111) >> 0;
-        header.questions = buf.peek!ushort(4);
-        header.answers = buf.peek!ushort(6);
-        header.authorities = buf.peek!ushort(8);
-        header.additionals = buf.peek!ushort(10);
-
-        if (header.tc != 0 ||
-            header.rd != 0 ||
-            header.ra != 0 ||
-            header.z != 0 ||
-            header.ad != 0 ||
-            header.cd != 0 ||
-            header.rc != 0) {
-          return result;
-        }
-
-        result.header = header;
-        result.questions.length = header.questions;
-        result.answers.length = header.answers;
-        result.authorities.length = header.authorities;
-        result.additionals.length = header.additionals;
-
-        auto sum = header.questions;
-        sum += header.answers;
-        sum += header.authorities;
-        sum += header.additionals;
-        if (sum == 0) {
-          // no payload?
-          return result;
-        }
-
-        // ref0rma:
-        // hell0, fr1nd
-        struct string_ushort {
-          string name;
-          ushort count;
-        }
-        string_ushort[] record_count_list;
-        record_count_list.length = 4;
-        auto count = 0;
-        if (header.questions > 0) {
-          record_count_list[count].name = "questions";
-          record_count_list[count].count = header.questions;
-          count += 1;
-        }
-        if (header.answers > 0) {
-          record_count_list[count].name = "answers";
-          record_count_list[count].count = header.answers;
-          count += 1;
-        }
-        if (header.authorities > 0) {
-          record_count_list[count].name = "authorities";
-          record_count_list[count].count = header.authorities;
-          count += 1;
-        }
-        if (header.additionals > 0) {
-          record_count_list[count].name = "additionals";
-          record_count_list[count].count = header.additionals;
-          count += 1;
-        }
-        record_count_list.length = count;
-
-        auto offset = 12;
-        auto current_record_item = 0;
-        // indexes for pushing to result array
-        auto index_questions = 0;
-        auto index_answers = 0;
-        auto index_authorities = 0;
-        auto index_additionals = 0;
-
-        while(current_record_item < record_count_list.length) {
-          auto parsed = _parseLabel(buf, offset);
-          if (parsed.valid) {
-            offset += parsed.length;
-          } else {
-            //invalid = true;
-            break;
-          }
-
-          auto record_key = record_count_list[current_record_item].name;
-          if (record_key == "questions") {
-            if (offset + 4 > buf.length) {
-              break;
-            }
-            ushort record_type = buf.peek!ushort(offset);
-            offset += 2;
-            ushort record_class = buf.peek!ushort(offset);
-            offset += 2;
-            RecordQuestion question;
-            question.label = parsed.domain_name;
-            question.record_type = record_type;
-            question.record_class = record_class;
-            result.questions[index_questions] = question;
-            index_questions += 1;
-          } else {
-            if (offset + 10 > buf.length) {
-              break;
-            }
-            ushort record_type = buf.peek!ushort(offset);
-            offset += 2;
-            ushort cls_value = buf.peek!ushort(offset);
-            ushort cls_key = cls_value & 0b0111111111111111;
-
-            ushort flash = cls_value & 0b1000000000000000 >> 15;
-            offset += 2;
-            auto ttl = buf.peek!uint(offset);
-            offset += 4;
-            auto rdlen = buf.peek!ushort(offset);
-            offset += 2;
-            if (offset + rdlen > buf.length) {
-              break;
-            }
-            RecordResponse response;
-            response.record_type = record_type;
-            response.record_class = cls_key;
-            response.flash = flash;
-            response.ttl = ttl;
-            response.rdlen = rdlen;
-            switch(record_type) {
-              case RecordTypes.a:
-                response.rdata = _parseRdataA(buf, offset, rdlen);
-                break;
-              case RecordTypes.ptr:
-                response.rdata = _parseRdataPtr(buf, offset, rdlen);
-                break;
-              case RecordTypes.txt:
-                response.rdata = _parseRdataTxt(buf, offset, rdlen);
-                break;
-              case RecordTypes.srv:
-                response.rdata = _parseRdataSrv(buf, offset, rdlen);
-                break;
-              default:
-                response.rdata = _parseRdataOther(buf, offset, rdlen);
-                break;
-            }
-            offset += rdlen;
-
-            if (record_key == "answers") {
-              result.answers[index_answers] = response;
-              index_answers += 1;
-            } else if (record_key == "authorities") {
-              result.authorities[index_authorities] = response;
-              index_authorities += 1;
-            } else if (record_key == "additionals") {
-              result.additionals[index_additionals] = response;
-              index_additionals += 1;
-            }
-          }
-
-          record_count_list[current_record_item].count--;
-          if (record_count_list[current_record_item].count <= 0) {
-            current_record_item += 1;
-          }
-        }
-
-        result.valid = true;
-        return result;
-      }
-      result = _parse(buf);
+      // parse
+      result = parseRR(buf);
     }
 
     return result;
   }
 }
 
-void main()
-{
+void main() {
   writeln("hello, friend\n");
 
   auto resolver = new DnsSD();
 
-  while(true)
-  {
-    auto rec = resolver.processMessages();
-    if (rec.valid) {
-      writeln(" ===== record parsed ===== ");
-      writeln(rec);
+  Record query;
+  query.header.questions = 1;
+  query.header.response = false;
+  query.questions.length = 1;
+  query.questions[0].label = "_services._dns-sd._udp.local";
+  query.questions[0].record_type = RecordTypes.ptr;
+  query.questions[0].record_class = RecordClasses.int_;
+  resolver.sendRecord(query);
+  Record resp;
+  resp.header.answers = 1;
+  resp.header.additionals = 3;
+  resp.header.response = true;
+  resp.header.authoritative = true;
+  resp.answers.length = 1;
+  resp.answers[0].label = "_batya._tcp.local";
+  resp.answers[0].record_type = RecordTypes.ptr;
+  resp.answers[0].record_class = RecordClasses.int_;
+  resp.answers[0].label = "_batya._tcp.local";
+  resp.answers[0].record_type = RecordTypes.ptr;
+  resp.answers[0].record_class = RecordClasses.int_;
+  resp.answers[0].ttl = 120;
+  resp.answers[0].rdata.data = "_batya._tcp.local";
+  resp.additionals.length = 3;
+  resp.additionals[0].label = "_batya._tcp.local";
+  resp.additionals[0].record_type = RecordTypes.a;
+  resp.additionals[0].record_class = RecordClasses.int_;
+  resp.additionals[0].ttl = 120;
+  resp.additionals[0].rdata.data = "192.168.1.63";
+  resp.additionals[1].label = "_batya._tcp.local";
+  resp.additionals[1].record_type = RecordTypes.srv;
+  resp.additionals[1].record_class = RecordClasses.int_;
+  resp.additionals[1].ttl = 120;
+  resp.additionals[1].rdata.port = 80;
+  resp.additionals[2].label = "_batya._tcp.local";
+  resp.additionals[2].record_type = RecordTypes.txt;
+  resp.additionals[2].record_class = RecordClasses.int_;
+  resp.additionals[2].ttl = 120;
+  resp.additionals[2].rdata.data = "batya=big boldhead\njunior=small boldhead";
+  resolver.sendRecord(resp);
+
+
+  while(true) {
+    try {
+      auto rec = resolver.processMessages();
+      if (rec.valid) {
+        writeln(" ===== record parsed ===== ");
+        writeln(rec);
+        writeln(" ===== serialize:    ===== ");
+        auto rrs = serializeRR(rec);
+        writeln("##### ##### #### #### ##### #### #####");
+        writeln("Serialized: ", rrs.toHexString());
+        writeln("##### ##### #### #### ##### #### #####");
+        auto r2 = parseRR(rrs);
+        if (r2.valid) {
+          writeln(" ===== serialized parsed ===== ");
+        } else {
+          writeln(" ===== serialized NOT valid ===");
+        }
+      }
+      Thread.sleep(1.msecs);
+    } catch (Exception e) {
+      writeln("Exeption parsing message: ");
+      writeln(e);
+    } catch (Error e) {
+      writeln("Error parsing message: ");
+      writeln(e);
     }
-    //Thread.sleep(100.msecs);
   }
 }
