@@ -5,6 +5,7 @@ import std.socket;
 
 import core.thread;
 import core.sys.posix.netinet.in_;
+import core.sys.linux.sys.socket;
 import core.sys.linux.netinet.in_ : IP_ADD_MEMBERSHIP, IP_MULTICAST_LOOP;
 
 import record_classes_types;
@@ -12,7 +13,7 @@ import record_classes_types;
 class DnsSD {
   Socket sock;
   Address addr;
-  this(string multicastGroupIP = "224.0.0.251", ushort port = 5353) {
+  this(string iface = "eth0", string multicastGroupIP = "224.0.0.251", ushort port = 5353) {
     sock = new UdpSocket(AddressFamily.INET);
     sock.blocking = false;
     InternetAddress localAddress = new InternetAddress(port);
@@ -31,9 +32,11 @@ class DnsSD {
 
     auto optionValue = (cast(char*)&addRequest)[0.. ip_mreq.sizeof];
     sock.setOption(SocketOptionLevel.IP, cast(SocketOption)IP_ADD_MEMBERSHIP, optionValue);
+    sock.setOption(SocketOptionLevel.SOCKET, cast(SocketOption)SO_BINDTODEVICE, cast(void[])iface);
     auto addrs = getAddress(multicastGroupIP, port);
+    writeln(addrs);
     addr = addrs[0];
-    sock.bind(addr);
+    //sock.bind(addr);
   }
   public void sendRecord(Record record) {
     ubyte[] result = serializeRR(record);
@@ -71,7 +74,6 @@ class DnsSD {
       Record msg = processMessages();
       if (msg.valid) {
         if (!msg.header.response) continue;
-        //writeln(msg);
         for (auto i = 0; i < msg.answers.length; i += 1) {
           auto ans = msg.answers[i];
           string label = ans.label;
@@ -90,13 +92,15 @@ class DnsSD {
   }
 }
 
-void main() {
-  writeln("hello, friend\n");
+void main(string[] args) {
+  writeln("hello, friend\n", args);
+  auto iface = args[1];
 
-  auto resolver = new DnsSD();
+  auto resolver = new DnsSD(iface);
   resolver.scanService("_services._dns-sd._udp.local");
 
-  /**
+  /** example of response
+    
     Record resp;
     resp.header.answers = 1;
     resp.header.additionals = 3;
@@ -129,34 +133,4 @@ void main() {
     resp.additionals[2].rdata.data = "batya=big boldhead\njunior=small boldhead";
     resolver.sendRecord(resp);
    **/
-
-  while(true) {
-    try {
-      /**
-        auto rec = resolver.processMessages();
-        if (rec.valid) {
-        writeln(" ===== record parsed ===== ");
-        writeln(rec);
-        writeln(" ===== serialize:    ===== ");
-        auto rrs = serializeRR(rec);
-        writeln("##### ##### #### #### ##### #### #####");
-        writeln("Serialized: ", rrs.toHexString());
-        writeln("##### ##### #### #### ##### #### #####");
-        auto r2 = parseRR(rrs);
-        if (r2.valid) {
-        writeln(" ===== serialized parsed ===== ");
-        } else {
-        writeln(" ===== serialized NOT valid ===");
-        }
-        }
-       **/
-      Thread.sleep(1.msecs);
-    } catch (Exception e) {
-      writeln("Exeption parsing message: ");
-      writeln(e);
-    } catch (Error e) {
-      writeln("Error parsing message: ");
-      writeln(e);
-    }
-  }
 }
