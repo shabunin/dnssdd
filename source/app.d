@@ -3,20 +3,69 @@ import std.conv;
 import std.stdio;
 import std.socket;
 
+import std.datetime.stopwatch : StopWatch;
+
 import core.thread;
-import core.sys.posix.netinet.in_;
+import core.sys.linux.ifaddrs;
 import core.sys.linux.sys.socket;
 import core.sys.linux.netinet.in_ : IP_ADD_MEMBERSHIP, IP_MULTICAST_LOOP;
+import core.sys.posix.netdb;
+import core.sys.posix.netinet.in_;
 
 import record_classes_types;
 
 class DnsSD {
   Socket sock;
+  Address[] addrs;
   Address addr;
-  this(string iface = "eth0", string multicastGroupIP = "224.0.0.251", ushort port = 5353) {
+  this(string iface, string multicastGroupIP = "224.0.0.251", ushort port = 5353) {
     sock = new UdpSocket(AddressFamily.INET);
     sock.blocking = false;
-    InternetAddress localAddress = new InternetAddress(port);
+    // detect ip address of iface
+    string localHost = "";
+    
+    ifaddrs *ifaddr;
+    ifaddrs *ifa;
+    int family, s;
+
+    if (getifaddrs(&ifaddr) == -1) 
+    {
+        writeln("getifaddrs");
+    }
+    for (ifa = ifaddr; ifa != null; ifa = ifa.ifa_next) {
+        if (ifa.ifa_addr == null)
+            continue;  
+        auto host = new char[NI_MAXHOST];
+        s=getnameinfo(ifa.ifa_addr,
+            sockaddr_in.sizeof,
+            host.ptr,
+            NI_MAXHOST,
+            null,
+            0,
+            NI_NUMERICHOST);
+        if (s == 0)
+        {
+          string ifaceStr = "";
+          auto i = ifa.ifa_name;
+          while(*i) {
+            ifaceStr ~= *i;
+            i+= 1;
+          }
+          writeln("host? ", host);
+          writeln("iface? ", ifaceStr);
+          if (ifaceStr == iface) {
+            localHost = cast(string) host;
+          }
+        }
+    }
+
+    InternetAddress localAddress;
+    if (localHost != "") { 
+      localAddress = new InternetAddress(localHost, port);
+    } else {
+      localAddress = new InternetAddress(port);
+    }
+    writeln("local host: ", localHost);
     InternetAddress multicastGroupAddr = new InternetAddress(multicastGroupIP, port);
 
     struct ip_mreq {
@@ -32,11 +81,18 @@ class DnsSD {
 
     auto optionValue = (cast(char*)&addRequest)[0.. ip_mreq.sizeof];
     sock.setOption(SocketOptionLevel.IP, cast(SocketOption)IP_ADD_MEMBERSHIP, optionValue);
-    sock.setOption(SocketOptionLevel.SOCKET, cast(SocketOption)SO_BINDTODEVICE, cast(void[])iface);
-    auto addrs = getAddress(multicastGroupIP, port);
-    writeln(addrs);
+
+
+    addrs = getAddress(multicastGroupIP, port);
     addr = addrs[0];
-    //sock.bind(addr);
+    if (iface != "") {
+      sock.setOption(SocketOptionLevel.SOCKET, cast(SocketOption)SO_BINDTODEVICE, cast(void[])iface);
+      auto anyAddrs = getAddress("0.0.0.0", port);
+      auto anyAddr = anyAddrs[0];
+      sock.bind(anyAddr);
+    } else {
+      sock.bind(addr);
+    }
   }
   public void sendRecord(Record record) {
     ubyte[] result = serializeRR(record);
@@ -69,7 +125,15 @@ class DnsSD {
     query.questions[0].record_type = RecordTypes.ptr;
     query.questions[0].record_class = RecordClasses.int_;
     sendRecord(query);
+    auto sw = StopWatch();
+    sw.start();
     while(true) {
+      auto dur = sw.peek();
+      if (dur > 5000.msecs) {
+        query.questions[0].label = service;
+        sendRecord(query);
+        sw.reset();
+      }
       Thread.sleep(1.msecs);
       Record msg = processMessages();
       if (msg.valid) {
@@ -78,11 +142,10 @@ class DnsSD {
           auto ans = msg.answers[i];
           string label = ans.label;
           if (ans.record_type == RecordTypes.ptr) {
+            Thread.sleep(100.msecs);
             string domain = ans.rdata.data;
-            if ((domain in ptrs) !is null) continue;
+            if ((domain in ptrs) is null) writeln(domain);
             ptrs[domain] = ans;
-            Thread.sleep(300.msecs);
-            writeln(domain);
             query.questions[0].label = domain;
             sendRecord(query);
           }
@@ -94,10 +157,17 @@ class DnsSD {
 
 void main(string[] args) {
   writeln("hello, friend\n", args);
-  auto iface = args[1];
+  string service = "_services._dns-sd._udp.local";
+  string iface = "";
+  if (args.length > 1) {
+   service = args[1];
+  }
+  if (args.length > 2) {
+   iface = args[2];
+  }
 
   auto resolver = new DnsSD(iface);
-  resolver.scanService("_services._dns-sd._udp.local");
+  resolver.scanService(service);
 
   /** example of response
     
