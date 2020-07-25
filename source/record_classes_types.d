@@ -74,7 +74,7 @@ enum RecordTypes {
   tsig = 250,
   uri = 256,
   opt = 41,
-  all = 255
+  any = 255
 };
 
 struct RecordLabel {
